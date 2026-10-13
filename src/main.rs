@@ -9,64 +9,68 @@ use ggez::{
     GameResult,
     ContextBuilder,
 };
-use rand::Rng;
-use std::{cell::Cell, collections::HashMap, rc::Rc};
+use rand::{Rng, distributions::uniform::SampleUniform};
+use std::{cell::Cell, collections::HashMap, println, rc::Rc, vec};
 use std::time::{Duration, Instant};
 
-const RADIUS: f32 = 35.0;
+const RADIUS_MAX: f32 = 60.0;
+const RADIUS_MIN: f32 = 35.0;
 const NUMOFBALLS: i32 = 20;
-const GRAVITY: f32 = 0.2;
-const FRICTION: f32 = 0.01;
-const BOUNCEFRICTION: f32 = 0.99;
+const GRAVITY: f32 = 0.0;
+const FRICTION: f32 = 0.0;
+const BOUNCEFRICTION: f32 = 1.0;
 
-struct MainState<'a> {
-    balls: Vec<Ball>,
+struct MainState {
+    balls: Vec<Rc<Ball>>,
     collision_handler: CollisionHandler,
-    zones: Vec<Zone<'a>>,
+    zones: Vec<Zone>,
     scale_factor: f32,
     win_dim: Vec2,
 }
 
-struct Zone<'a>{
+struct Zone{
     pos: Vec2,
     size: Vec2,
     index: i32,
-    balls: Vec<Rc<&'a Ball>>,
+    balls: Vec<Rc<Ball>>,
 }
 
 struct Ball {
-    acc: Vec2,
+    acc: Cell<Vec2>,
     vel: Cell<Vec2>,
     pos: Cell<Vec2>,
     radius: f32,
     mass: f32,
     color: Color,
     id: i32,
-    zone: i32,
+    zone: Cell<[usize; 2]>,
 }
 
 impl Ball {
-    fn update(&mut self) {
+    fn update(&self) {
         let mut vel = self.vel.get();
         let mut pos = self.pos.get();
+        let mut acc = self.acc.get();
+
+        self.join_zone();
 
 
         // gravity
-        self.acc += vec2(0.0, GRAVITY);
+        acc += vec2(0.0, GRAVITY);
 
         // physics
-        self.acc -= vel * FRICTION;
-        vel += self.acc;
+        acc -= vel * FRICTION;
+        vel += acc;
         pos += vel;
 
-        self.acc = vec2(0.0, 0.0);
+        self.acc.set(vec2(0.0, 0.0));
 
         self.vel.set(vel);
         self.pos.set(pos);
 
     }
 
-    fn wall_collision(&mut self, win_dim: Vec2) {
+    fn wall_collision(&self, win_dim: Vec2) {
         let mut vel = self.vel.get();
         let mut pos = self.pos.get();
 
@@ -92,6 +96,7 @@ impl Ball {
     }
     
     fn ball_collision(&self, ball: &Ball) {
+        // CELL requires to take value out before setting again with .set()
         let v1 = self.vel.get();
         let v2 = ball.vel.get();
 
@@ -136,44 +141,67 @@ impl Ball {
         canvas.draw(&mesh, Vec2::ZERO);
     }
 
-    fn join_zone(&self, zones: &Vec<Zone>) {
+    fn join_zone(&self) {
         let pos = self.pos.get();
-        for zone in zones {
-            if pos.x > zone.pos.x && pos.x < zone.pos.x + zone.size.x {
-                if pos.y > zone.pos.y && pos.y < zone.pos.y + zone.size.y {
-                    self.zone = zone.index;
-                }
-            }
-        }
+
+        let zone: [usize; 2] = [(pos.x / self.radius) as usize, (pos.y / self.radius) as usize];
+
+        self.zone.set(zone);
+        
+        self.pos.set(pos);
     }
 }
 
-fn random(min: f32, max: f32) -> f32 {
+fn random<T: SampleUniform + PartialOrd>(min: T, max: T) -> T {
+    if min >= max {
+        return min;
+    }
     rand::thread_rng().gen_range(min..max)
 }
 
 struct CollisionHandler {
-    collision_hash: HashMap<i32, i32>
+    // collision_hash: HashMap<i32, i32>
 }
 impl CollisionHandler {
-    fn collide_balls(&mut self, ball_vec: &Vec<Ball>, zones: &mut Vec<Zone>) {
-        self.collision_hash.clear();
-        for ball0 in ball_vec {
-            for ball1 in ball_vec {
-                if ball0.id == ball1.id { continue; }
-                if self.collision_hash.contains_key(&ball1.id) {
-                    if self.collision_hash[&ball1.id] == ball0.id { continue; }
-                }
-                if self.collision_hash.contains_key(&ball0.id) {
-                    if self.collision_hash[&ball0.id] == ball1.id { println!("wow"); continue; }
-                }
+    // OLD FAULTY CODE
+    // fn collide_balls(&mut self, ball_vec: &Vec<Rc<Ball>>, zones: &mut Vec<Zone>) {
+    //     self.collision_hash.clear();
+    //     for ball0 in ball_vec {
+    //         for ball1 in ball_vec {
+    //             if ball0.id == ball1.id { continue; }
+    //             if self.collision_hash.contains_key(&ball1.id) {
+    //                 if self.collision_hash[&ball1.id] == ball0.id { continue; }
+    //             }
+    //             if self.collision_hash.contains_key(&ball0.id) {
+    //                 if self.collision_hash[&ball0.id] == ball1.id { continue; }
+    //             }
 
-                if ball0.pos.get().distance(ball1.pos.get()) > ball0.radius + ball1.radius { continue; }
-                self.collision_hash.insert(ball0.id, ball1.id);
+    //             if ball0.pos.get().distance(ball1.pos.get()) > ball0.radius + ball1.radius { continue; }
+    //             self.collision_hash.insert(ball0.id, ball1.id);
                 
-                ball0.ball_collision(&ball1);
-                ball0.fix_pos(&ball1);
+    //             ball0.ball_collision(&ball1);
+    //             ball0.fix_pos(&ball1);
                 
+    //         }
+    //     }
+    // }
+
+    fn new_collide_balls(&mut self, ball_vec: &Vec<Rc<Ball>>) {
+        for i in 0..ball_vec.len() {
+            for j in (i + 1)..ball_vec.len() {
+                let (a, b) = (&ball_vec[i], &ball_vec[j]);
+
+                let (vel_a, vel_b) = (a.vel.get(), b.vel.get());
+                let (pos_a, pos_b) = (a.pos.get(), b.pos.get());
+
+                let square_dist = pos_a.distance_squared(pos_b);
+                if square_dist > a.radius * b.radius * 4.0 { continue; }
+
+                a.fix_pos(b);
+                
+                if (vel_a - vel_b).dot(pos_a - pos_b) > 0.0 { continue; }
+                
+                a.ball_collision(b);
             }
         }
     }
@@ -181,22 +209,26 @@ impl CollisionHandler {
 
 // ------------------ BALL ------------------
 
-impl MainState<'_> {
-    fn spawn_balls(&mut self) {
+
+
+
+impl MainState {
+    fn spawn_balls(&mut self, color_vec: Vec<Color>) {
         for i in 0..NUMOFBALLS {
+            let color_index = random(0, 4);
             // let radius = RADIUS * random(0.70, 1.30);
-            let radius = RADIUS;
+            let radius = random(RADIUS_MIN, RADIUS_MAX);
             self.balls.push(
-                Ball {
-                    acc: vec2(0.0, 0.0),
+                Rc::new(Ball {
+                    acc: Cell::new(vec2(0.0, 0.0)),
                     vel: Cell::new(vec2(random(-5.0, 5.0), 0.0)),
                     pos: Cell::new(vec2(random(radius, self.win_dim.x), random(0.0, self.win_dim.y))),
                     radius,
                     mass: radius,
-                    color: Color::WHITE,
+                    color: color_vec[color_index],
                     id: i,
-                    zone: 0,
-                }
+                    zone: Cell::new([0, 0]),
+                })
             );
         }
     }
@@ -204,9 +236,9 @@ impl MainState<'_> {
 
 // ------------------ ZONE ------------------
 
-impl MainState<'_> {
+impl MainState {
     fn spawn_zones(&mut self) {
-        let size = RADIUS;
+        let size = RADIUS_MAX;
         let mut i: i32 = 0;
 
         for x in (0..self.win_dim.x as i32).step_by(size as usize) {
@@ -229,7 +261,7 @@ impl MainState<'_> {
             for zone in &mut self.zones {
                 if ball.pos.get().x > zone.pos.x && ball.pos.get().x < zone.pos.x + zone.size.x {
                     if ball.pos.get().y > zone.pos.y && ball.pos.get().y < zone.pos.y + zone.size.y {
-                        zone.balls.push(ball);
+                        zone.balls.push(Rc::clone(ball));
                     }
                 }
             }
@@ -239,11 +271,15 @@ impl MainState<'_> {
 
 // ------------------ GGEZ CONFIG ------------------
 
-impl EventHandler for MainState<'_> {
+impl EventHandler for MainState {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         if ctx.keyboard.is_key_pressed(KeyCode::Space) {
             self.balls.clear();
-            self.spawn_balls();
+            self.spawn_balls(create_color_vec());
+        }
+
+        if ctx.keyboard.is_key_just_pressed(KeyCode::A) {
+            self.spawn_balls(create_color_vec());
         }
         
         for ball in &mut self.balls {
@@ -253,7 +289,7 @@ impl EventHandler for MainState<'_> {
 
         self.get_balls();
 
-        self.collision_handler.collide_balls(&self.balls, &mut self.zones);
+        self.collision_handler.new_collide_balls(&self.balls);
 
         Ok(())
     }
@@ -269,6 +305,19 @@ impl EventHandler for MainState<'_> {
     }
 }
 
+fn create_color_vec() -> Vec<Color> {
+
+    let color_vec = vec![
+        Color::from_rgb_u32(0xdad7cd),
+        Color::from_rgb_u32(0xa3b18a),
+        Color::from_rgb_u32(0x588157),
+        Color::from_rgb_u32(0x3a5a40),
+        Color::from_rgb_u32(0x344e41),
+    ];
+
+    color_vec
+}
+
 fn main() {
     
     let cb = ContextBuilder::new("first_draw", "Kasper Larsson-Skauli")
@@ -279,21 +328,24 @@ fn main() {
 
     let win_dim: Vec2 = ctx.gfx.size().into();
 
-    let scale_factor = win_dim.x / RADIUS as f32;
+    let scale_factor = win_dim.x / RADIUS_MAX as f32;
 
     // ------------------ State ------------------
+
+
+
 
     let mut state = MainState {
         balls: vec![],
         scale_factor,
         win_dim,
-        collision_handler: CollisionHandler {
-            collision_hash: HashMap::new(),
-        },
+        collision_handler: CollisionHandler {},
         zones: vec![],
     };
 
-    state.spawn_balls();
+    state.spawn_balls(
+        create_color_vec()
+    );
     state.spawn_zones();
 
     event::run(ctx, event_loop, state);
