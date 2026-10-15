@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 const RADIUS_MAX: f32 = 60.0;
 const RADIUS_MIN: f32 = 35.0;
 const NUMOFBALLS: i32 = 20;
-const GRAVITY: f32 = 0.0;
-const FRICTION: f32 = 0.0;
-const BOUNCEFRICTION: f32 = 1.0;
+const GRAVITY: f32 = 0.2;
+const FRICTION: f32 = 0.01;
+const BOUNCEFRICTION: f32 = 0.99;
 
 struct MainState {
     balls: Vec<Rc<Ball>>,
